@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-中国联通采购与招标网标讯日报推送 v1.2.0
+中国联通采购与招标网标讯日报推送 v1.3.0
 数据源: https://www.chinaunicombidding.cn
 API: POST /api/v1/bizAnno/getAnnoList
 详情: GET /api/v1/bizAnno/getAnnoDetailed/{id}
@@ -10,11 +10,15 @@ API: POST /api/v1/bizAnno/getAnnoList
 import json
 import re
 import sys
+import os
+import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
 
 # ==================== 配置 ====================
+
+WECOM_WEBHOOK = os.environ.get('UNICOM_WEBHOOK', '')
 
 BASE_URL = "https://www.chinaunicombidding.cn"
 LIST_API = f"{BASE_URL}/api/v1/bizAnno/getAnnoList"
@@ -239,6 +243,46 @@ def fetch_detail(item_id):
     return resp.get("data")
 
 
+def send_wecom(title, table_lines):
+    """按section发送到企业微信webhook，每section不超过4096字节"""
+    if not WECOM_WEBHOOK:
+        return
+    section = title + '\n' + '\n'.join(table_lines) if table_lines else title
+    if len(section.encode('utf-8')) <= 4096:
+        payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": section}}
+        subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
+                        '-H', 'Content-Type: application/json',
+                        '-d', json.dumps(payload, ensure_ascii=False)],
+                       capture_output=True, timeout=15)
+    else:
+        # 先发标题
+        payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": title}}
+        subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
+                        '-H', 'Content-Type: application/json',
+                        '-d', json.dumps(payload, ensure_ascii=False)],
+                       capture_output=True, timeout=15)
+        # 按行分批
+        chunk = ''
+        for line in table_lines:
+            test = chunk + '\n' + line if chunk else line
+            if len(test.encode('utf-8')) > 3800:
+                if chunk:
+                    payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": chunk}}
+                    subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
+                                    '-H', 'Content-Type: application/json',
+                                    '-d', json.dumps(payload, ensure_ascii=False)],
+                                   capture_output=True, timeout=15)
+                chunk = line
+            else:
+                chunk = test
+        if chunk:
+            payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": chunk}}
+            subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
+                            '-H', 'Content-Type: application/json',
+                            '-d', json.dumps(payload, ensure_ascii=False)],
+                           capture_output=True, timeout=15)
+
+
 def main():
     cutoff_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     today = datetime.now().strftime("%Y-%m-%d")
@@ -313,6 +357,7 @@ def main():
             link = DETAIL_PAGE + item["id"]
             result_lines.append(f"| {i} | {p} | {n} | {w} | [详情]({link}) |")
         result_lines.append("")
+    
 
     # 采购公告表格
     announcement_lines = []
@@ -327,9 +372,22 @@ def main():
             link = DETAIL_PAGE + item["id"]
             announcement_lines.append(f"| {i} | {p} | {n} | {pr} | [详情]({link}) |")
         announcement_lines.append("")
+    
 
     summary = f"---\n合计: 采购结果{len(procurement_results)}条 | 采购公告{len(procurement_announcements)}条"
 
+    # 发送到企业微信webhook
+    if result_lines or announcement_lines:
+        send_wecom(header, [])
+        if result_lines:
+            send_wecom(f"**📊 采购结果（{len(procurement_results)}条）**", result_lines)
+        if announcement_lines:
+            send_wecom(f"**📊 采购公告（{len(procurement_announcements)}条）**", announcement_lines)
+        send_wecom(summary, [])
+    else:
+        send_wecom(header + '\n' + summary, [])
+
+    # stdout输出
     print(header + "\n")
     if result_lines:
         print("\n".join(result_lines))

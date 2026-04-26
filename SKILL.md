@@ -1,7 +1,7 @@
 ---
 name: china-unicom-procurement
 description: 中国联通采购与招标网（chinaunicombidding.cn）标讯抓取 — 网络安全相关公告查询
-version: 1.2.0
+version: 1.3.0
 triggers:
   - 联通采购
   - 联通标讯
@@ -138,6 +138,20 @@ Referer: https://www.chinaunicombidding.cn/bidInformation
 
 ## 输出格式要求
 
+**⚠️ 企业微信 Webhook 机器人必须用 `markdown_v2` 类型才支持 markdown 表格！**
+
+### Webhook 推送格式
+```python
+payload = {
+    "msgtype": "markdown_v2",
+    "markdown_v2": {"content": table_content}
+}
+```
+
+**关键发现（2026-04-26）：**
+- `markdown` 类型 → ❌ 不支持表格，只支持标题/加粗/链接/引用
+- `markdown_v2` 类型 → ✅ 支持 markdown 表格
+
 ### 格式规范（markdown表格）
 ```
 ## 📡 中国联通标讯日报
@@ -160,11 +174,34 @@ Referer: https://www.chinaunicombidding.cn/bidInformation
 ```
 
 ### 分片规则
-- 企业微信单条消息不超过4096字节
+- 企业微信webhook单条消息不超过4096字节
 - 按section分片：采购结果1片、采购公告1片
 - 每片包含完整表格头
-- 使用`send_message`分片发送
+- 0条时header+summary合并为1条发送
 
+### ⚠️ 企业微信Webhook表格显示
+**必须用 `markdown_v2` 类型**，普通 `markdown` 类型不支持表格语法：
+```python
+# ✅ 正确
+payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": table_content}}
+
+# ❌ 错误（表格不显示）
+payload = {"msgtype": "markdown", "markdown": {"content": table_content}}
+```
+
+## Webhook 推送格式
+
+**⚠️ 企业微信 webhook 机器人必须使用 `markdown_v2` 类型才能显示表格！**
+
+```python
+payload = {
+    "msgtype": "markdown_v2",
+    "markdown_v2": {"content": table_content}
+}
+```
+
+普通 `markdown` 类型不支持表格语法（`| col | col |`），会导致表格显示异常。
+Hermes 的 `send_message` 走应用消息 API，普通 `markdown` 就支持表格，与 webhook 机器人不同。
 ## 与其他运营商skill的关键差异
 
 | 特性 | 联通采购网 | 移动B2B | 电信阳光采购 |
@@ -202,6 +239,16 @@ Referer: https://www.chinaunicombidding.cn/bidInformation
 4. **假阳性**：建筑/交通安全项目被误匹配，更新EXCLUDE_WORDS列表
 
 ## 更新日志
+
+### v1.3.0 (2026-04-26)
+- **修复**: Webhook推送类型改为`markdown_v2`（支持表格）
+- **优化**: 采购结果表格去掉预算列
+
+### v1.3.0 (2026-04-26)
+- **修复**: 企业微信webhook推送改用 `markdown_v2` 类型（支持表格）
+- **修复**: 电信脚本0条时仍发送标题+汇总
+- **修复**: 联通0条时header+summary合并为1条
+- **修复**: 移动脚本清理名称中的换行符（`\n`）
 
 ### v1.2.0 (2026-04-26)
 - **修复**: 省份推断（从bidCompany/标题提取，解决"其他"问题）
