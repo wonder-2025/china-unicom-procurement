@@ -54,7 +54,8 @@ EXCLUDE_WORDS = [
     "智慧工地", "工地安全", "建筑工地", "施工安全",
     "生命线安全", "基础设施安全", "市政安全",
     "安全生产", "特种作业", "安全作业",
-    "加密对讲", "加密卡", "量子加密对讲", "密码井",
+       "加密对讲", "加密卡", "量子加密对讲", "密码井",
+       "反诈宣传",
 ]
 
 REAL_CYBER_KEYWORDS = [
@@ -243,11 +244,19 @@ def fetch_detail(item_id):
     return resp.get("data")
 
 
+def escape_md_v2(text):
+    """转义markdown_v2特殊字符（用于表格单元格内容）"""
+    for ch in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(ch, f'\\{ch}')
+    return text
+
+
 def send_wecom(title, table_lines):
-    """按section发送到企业微信webhook，每section不超过4096字节"""
+    """按section发送到企业微信webhook，智能分片"""
     if not WECOM_WEBHOOK:
         return
     section = title + '\n' + '\n'.join(table_lines) if table_lines else title
+    # 总量 < 4096 字节，直接发送不拆分
     if len(section.encode('utf-8')) <= 4096:
         payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": section}}
         subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
@@ -255,17 +264,16 @@ def send_wecom(title, table_lines):
                         '-d', json.dumps(payload, ensure_ascii=False)],
                        capture_output=True, timeout=15)
     else:
-        # 先发标题
+        # 超过4096字节才分片
         payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": title}}
         subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
                         '-H', 'Content-Type: application/json',
                         '-d', json.dumps(payload, ensure_ascii=False)],
                        capture_output=True, timeout=15)
-        # 按行分批
         chunk = ''
         for line in table_lines:
             test = chunk + '\n' + line if chunk else line
-            if len(test.encode('utf-8')) > 3800:
+            if len(test.encode('utf-8')) > 4000:
                 if chunk:
                     payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": chunk}}
                     subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
@@ -347,13 +355,12 @@ def main():
     # 采购结果表格（无预算列）
     result_lines = []
     if procurement_results:
-        result_lines.append(f"**📊 采购结果（{len(procurement_results)}条）**")
         result_lines.append("| 序号 | 省份 | 项目名称 | 中标厂商 | 详情 |")
         result_lines.append("|------|------|----------|----------|------|")
         for i, item in enumerate(procurement_results, 1):
-            p = item.get("inferredProvince", "其他")
-            n = clean_title(item.get("annoName", ""))
-            w = item.get("winner", "-")
+            p = escape_md_v2(item.get("inferredProvince", "其他"))
+            n = escape_md_v2(clean_title(item.get("annoName", "")))
+            w = escape_md_v2(item.get("winner", "-"))
             link = DETAIL_PAGE + item["id"]
             result_lines.append(f"| {i} | {p} | {n} | {w} | [详情]({link}) |")
         result_lines.append("")
@@ -362,13 +369,12 @@ def main():
     # 采购公告表格
     announcement_lines = []
     if procurement_announcements:
-        announcement_lines.append(f"**📊 采购公告（{len(procurement_announcements)}条）**")
         announcement_lines.append("| 序号 | 省份 | 项目名称 | 最高限价/预算 | 详情 |")
         announcement_lines.append("|------|------|----------|--------------|------|")
         for i, item in enumerate(procurement_announcements, 1):
-            p = item.get("inferredProvince", "其他")
-            n = clean_title(item.get("annoName", ""))
-            pr = item.get("price", "-")
+            p = escape_md_v2(item.get("inferredProvince", "其他"))
+            n = escape_md_v2(clean_title(item.get("annoName", "")))
+            pr = escape_md_v2(item.get("price", "-"))
             link = DETAIL_PAGE + item["id"]
             announcement_lines.append(f"| {i} | {p} | {n} | {pr} | [详情]({link}) |")
         announcement_lines.append("")
@@ -376,9 +382,9 @@ def main():
 
     summary = f"---\n合计: 采购结果{len(procurement_results)}条 | 采购公告{len(procurement_announcements)}条"
 
-    # 发送到企业微信webhook
+    # 发送到企业微信webhook（智能合并：数据少时尽量1条消息发完）
+    full_msg = header
     if result_lines or announcement_lines:
-        send_wecom(header, [])
         if result_lines:
             send_wecom(f"**📊 采购结果（{len(procurement_results)}条）**", result_lines)
         if announcement_lines:
