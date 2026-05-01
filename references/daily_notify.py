@@ -12,6 +12,7 @@ import re
 import sys
 import os
 import subprocess
+import ssl
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
@@ -19,6 +20,8 @@ from datetime import datetime, timedelta
 # ==================== 配置 ====================
 
 WECOM_WEBHOOK = os.environ.get('UNICOM_WEBHOOK', '')
+
+SAVE_DIR = os.path.expanduser("~/标讯/联通")
 
 BASE_URL = "https://www.chinaunicombidding.cn"
 LIST_API = f"{BASE_URL}/api/v1/bizAnno/getAnnoList"
@@ -50,13 +53,18 @@ EXCLUDE_WORDS = [
     "交通安全", "车载安全", "车辆安全", "车载主动安全", "机动车安全",
     "道路交通", "道路交安",
     "安全门", "安全防护用品", "安全巡检", "安全帽", "安全隐患整改",
-    "门禁", "视频监控", "视频图像", "防雷检测",
+    "门禁", "视频监控", "视频图像", "防雷", "防雷检测",
     "智慧工地", "工地安全", "建筑工地", "施工安全",
     "生命线安全", "基础设施安全", "市政安全",
     "安全生产", "特种作业", "安全作业",
        "加密对讲", "加密卡", "量子加密对讲", "密码井",
-       "反诈宣传",
+       "反诈宣传", "燃气安全", "质量安全",
+       "ISO", "反贿赂", "管理体系认证", "合规管理体系",
 ]
+
+SSL_CTX = ssl.create_default_context()
+SSL_CTX.check_hostname = False
+SSL_CTX.verify_mode = ssl.CERT_NONE
 
 REAL_CYBER_KEYWORDS = [
     "网安", "信安", "等保", "漏洞", "攻防", "渗透", "防火墙", "WAF",
@@ -85,7 +93,7 @@ def api_post(url, data):
     body = json.dumps(data).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers=HEADERS, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         print(f"[ERROR] API请求失败: {e}", file=sys.stderr)
@@ -95,7 +103,7 @@ def api_post(url, data):
 def api_get(url):
     req = urllib.request.Request(url, headers=HEADERS, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=SSL_CTX) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         print(f"[ERROR] API请求失败: {e}", file=sys.stderr)
@@ -154,50 +162,66 @@ def infer_province(item):
 
 
 def extract_winner(anno_text):
-    """从详情页文本提取中标厂商"""
+    """从详情页文本提取中标厂商（增强版v1.4.0）"""
     text = clean_html(anno_text)
     winners = []
 
-    # 模式1: "中选[候]候选人如下：公司名"（兼容错别字"侯选人"）
+    # 模式1: "中选候选[候]选人如下：公司名"
     m = re.search(r"中选[候侯]选人如下[：:]\s*(.+?)(?:\d+[、.]|公示期|公示媒|联系方式|$)", text)
     if m:
         chunk = m.group(1)
-        # 提取公司名（支持带括号的公司名）
-        names = re.findall(r"(?:第[一二三四五六七八九十\d]+名[：:]\s*)?([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", chunk)
+        names = re.findall(r"(?:第[一二三四五六七八九十\d]+名[：:]\s*)?([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司|科技公司|信息技术|网络科技|通信|数据|数字|软件|安全技术|计算机))", chunk)
         if names:
             winners = [n.strip() for n in names if len(n.strip()) > 4]
 
-    # 模式2: "成交候选人如下：公司名"
+    # 模式2: 成交候选人如下
     if not winners:
         m = re.search(r"成交候选人如下[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
         if m:
             winners = [m.group(1).strip()]
 
-    # 模式3: "成交供应商：公司名"
+    # 模式3: 成交/中标供应商
     if not winners:
-        m = re.search(r"成交[供]?应商[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
+        m = re.search(r"(?:成交|中标)[供]?应商[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
         if m:
             winners = [m.group(1).strip()]
 
-    # 模式4: "中选人：公司名"
+    # 模式4: 中选人
     if not winners:
         m = re.search(r"中选人[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
         if m:
             winners = [m.group(1).strip()]
 
-    # 模式5: "中标人：公司名"
+    # 模式5: 中标人
     if not winners:
         m = re.search(r"中标人[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
         if m:
             winners = [m.group(1).strip()]
 
-    # 模式6: "第一名：公司名" 或 "1. 公司名"
+    # 模式6: 成交人
     if not winners:
-        for m in re.finditer(r"第[一二三123]名[：:.\s]*([\u4e00-\u9fa5（）\(\)]{4,50}?(?:有限公司|股份公司|集团|有限责任公司))", text):
+        m = re.search(r"成交人[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
+        if m:
+            winners = [m.group(1).strip()]
+
+    # 模式7: 供应商名称
+    if not winners:
+        m = re.search(r"[供中]应商名称[：:]\s*([\u4e00-\u9fa5（）\(\)]+(?:有限公司|股份公司|集团|有限责任公司))", text)
+        if m:
+            winners = [m.group(1).strip()]
+
+    # 模式8: 第X名
+    if not winners:
+        for m in re.finditer(r"第[一二三123]名[：:.、\s]*([\u4e00-\u9fa5（）\(\)]{4,60}?(?:有限公司|股份公司|集团|有限责任公司|公司))", text):
             winners.append(m.group(1).strip())
 
-    return "、".join(winners[:3]) if winners else "-"
+    # 模式9: 表格中的公司名
+    if not winners:
+        names = re.findall(r"([\u4e00-\u9fa5（）\(\)]{4,40}?(?:有限公司|股份公司|集团))\s*(?:\d|[未不含])", text)
+        if names:
+            winners = [n.strip() for n in names[:3]]
 
+    return "、".join(winners[:3]) if winners else "-"
 
 def extract_price(anno_text):
     """从详情页文本提取金额"""
@@ -244,6 +268,54 @@ def fetch_detail(item_id):
     return resp.get("data")
 
 
+def sanitize_filename(title, max_len=40):
+    """生成安全的文件名"""
+    s = re.sub(r'[\\/:*?"<>|\n\r\t]', '', title)
+    s = s.strip().replace(' ', '_')
+    return s[:max_len]
+
+
+def save_to_md(item, detail_text, typ, idx, total):
+    """保存单条标讯为 md 文件"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    day_dir = os.path.join(SAVE_DIR, today)
+    os.makedirs(day_dir, exist_ok=True)
+
+    title = item.get("annoName", "无标题")
+    prov = item.get("inferredProvince", "其他")
+    ct = item.get("createDate", "")
+    winner = item.get("winner", "-")
+    price = item.get("price", "-")
+    link = f"{DETAIL_PAGE}{item['id']}"
+    atype = "采购结果" if typ == "result" else "采购公告"
+
+    # 用序号前缀确保排序
+    fname = f"{idx:02d}_{sanitize_filename(title)}.md"
+    fpath = os.path.join(day_dir, fname)
+
+    # 如果是带序号的采购结果，同时收集所有
+    body = clean_html(detail_text) if detail_text else "无详情内容"
+
+    md = f"""# {title}
+
+- **省份:** {prov}
+- **类型:** {atype}
+- **时间:** {ct}
+- **中标厂商:** {winner}
+- **最高限价/预算:** {price}
+- **详情链接:** [{link}]({link})
+
+---
+
+## 公告正文
+
+{body}
+"""
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(md)
+    print(f"  💾 保存: {fpath}", file=sys.stderr)
+
+
 def escape_md_v2(text):
     """转义markdown_v2特殊字符（用于表格单元格内容）"""
     for ch in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
@@ -251,44 +323,90 @@ def escape_md_v2(text):
     return text
 
 
-def send_wecom(title, table_lines):
-    """按section发送到企业微信webhook，智能分片"""
+def send_wecom(msg):
+    """发送到企业微信webhook，智能分片（仅超过4096字节时分片）"""
     if not WECOM_WEBHOOK:
         return
-    section = title + '\n' + '\n'.join(table_lines) if table_lines else title
-    # 总量 < 4096 字节，直接发送不拆分
-    if len(section.encode('utf-8')) <= 4096:
-        payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": section}}
-        subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
-                        '-H', 'Content-Type: application/json',
-                        '-d', json.dumps(payload, ensure_ascii=False)],
-                       capture_output=True, timeout=15)
+    total_bytes = len(msg.encode('utf-8'))
+    if total_bytes <= 4096:
+        payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": msg}}
+        proc = subprocess.Popen(['curl', '-sX', 'POST', WECOM_WEBHOOK,
+                                '-H', 'Content-Type: application/json',
+                                '-d', json.dumps(payload, ensure_ascii=False)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = proc.communicate(timeout=15)
+        print(f"[WeCom] 1/1片 ({total_bytes}字节): {stdout.decode('utf-8','ignore')[:80]}", file=sys.stderr)
     else:
-        # 超过4096字节才分片
-        payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": title}}
-        subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
-                        '-H', 'Content-Type: application/json',
-                        '-d', json.dumps(payload, ensure_ascii=False)],
-                       capture_output=True, timeout=15)
-        chunk = ''
-        for line in table_lines:
-            test = chunk + '\n' + line if chunk else line
-            if len(test.encode('utf-8')) > 4000:
-                if chunk:
-                    payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": chunk}}
-                    subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
+        # 按 section 分片，单 section 超限时回退按行拆
+        sections = re.split(r'\n(?=\*\*)', msg)
+        header_part = sections[0]
+        body_sections = sections[1:]
+        
+        max_bytes = 3800
+        chunks = []
+        current = header_part
+        for sec in body_sections:
+            test = current + '\n' + sec
+            if len(test.encode('utf-8')) > max_bytes:
+                if current.strip():
+                    chunks.append(current.rstrip())
+                # 单 section 超限 → 按子 section 再拆（每个子标题有自己表头）
+                if len(sec.encode('utf-8')) > max_bytes:
+                    sub_secs = re.split(r'\n(?=\*\*)', sec)
+                    for ss in sub_secs:
+                        if not ss.strip():
+                            continue
+                        t = current + '\n' + ss if current.strip() else ss
+                        if len(t.encode('utf-8')) > max_bytes:
+                            if current.strip():
+                                chunks.append(current.rstrip())
+                            # 单个子 section 还超限 → 最后手段按行拆，保留表头
+                            if len(ss.encode('utf-8')) > max_bytes:
+                                lines = ss.split('\n')
+                                # 找表头（第一行 | 和第二行 |---|）
+                                table_header = []
+                                rest_lines = []
+                                found_header = False
+                                for ln in lines:
+                                    if not found_header and ln.startswith('|'):
+                                        table_header.append(ln)
+                                        if len(table_header) >= 2:
+                                            found_header = True
+                                    elif found_header:
+                                        rest_lines.append(ln)
+                                    else:
+                                        table_header.append(ln)  # section title
+                                # 按行拆分 rest_lines，每片带表头
+                                sub_lines = table_header + rest_lines
+                                sub = ''
+                                for ln in sub_lines:
+                                    t2 = sub + '\n' + ln if sub else ln
+                                    if len(t2.encode('utf-8')) > max_bytes:
+                                        if sub.strip():
+                                            chunks.append(sub.rstrip())
+                                        sub = ln
+                                    else:
+                                        sub = t2
+                                current = sub if sub.strip() else ''
+                            else:
+                                current = ss
+                        else:
+                            current = t
+                else:
+                    current = sec
+            else:
+                current = test
+        if current.strip():
+            chunks.append(current.rstrip())
+        
+        for i, chunk in enumerate(chunks, 1):
+            payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": chunk[:4096]}}
+            proc = subprocess.Popen(['curl', '-sX', 'POST', WECOM_WEBHOOK,
                                     '-H', 'Content-Type: application/json',
                                     '-d', json.dumps(payload, ensure_ascii=False)],
-                                   capture_output=True, timeout=15)
-                chunk = line
-            else:
-                chunk = test
-        if chunk:
-            payload = {"msgtype": "markdown_v2", "markdown_v2": {"content": chunk}}
-            subprocess.run(['curl', '-sX', 'POST', WECOM_WEBHOOK,
-                            '-H', 'Content-Type: application/json',
-                            '-d', json.dumps(payload, ensure_ascii=False)],
-                           capture_output=True, timeout=15)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = proc.communicate(timeout=15)
+            print(f"[WeCom] 第{i}/{len(chunks)}片 ({len(chunk.encode('utf-8'))}字节): {stdout.decode('utf-8','ignore')[:80]}", file=sys.stderr)
 
 
 def main():
@@ -321,7 +439,11 @@ def main():
 
     for r in filtered:
         anno_type = r.get("annoType", "")
-        if anno_type == "采购结果":
+        title = r.get("annoName", "")
+        # 标题兜底：API 的 annoType 可能错误分类（如"中选结果公示"标为"采购公告"）
+        if "中选结果" in title or "结果公示" in title or "成交结果" in title or "中选候选人" in title:
+            procurement_results.append(r)
+        elif anno_type == "采购结果":
             procurement_results.append(r)
         elif anno_type == "采购公告":
             procurement_announcements.append(r)
@@ -333,20 +455,26 @@ def main():
     print(f"提取详情: 采购结果{len(procurement_results)}条, 采购公告{len(procurement_announcements)}条...", file=sys.stderr)
     for item in procurement_results:
         detail = fetch_detail(item["id"])
+        detail_text = ""
         if detail and detail.get("annoText"):
-            item["winner"] = extract_winner(detail["annoText"])
-            item["price"] = extract_price(detail["annoText"])
+            detail_text = detail["annoText"]
+            item["winner"] = extract_winner(detail_text)
+            item["price"] = extract_price(detail_text)
         else:
             item["winner"] = "-"
             item["price"] = "-"
+        save_to_md(item, detail_text, "result", len(procurement_results) - procurement_results.index(item), len(procurement_results))
         print(f"  结果: {clean_title(item.get('annoName',''))[:30]} → 厂商={item.get('winner','-')} 价格={item.get('price','-')}", file=sys.stderr)
 
     for item in procurement_announcements:
         detail = fetch_detail(item["id"])
+        detail_text = ""
         if detail and detail.get("annoText"):
-            item["price"] = extract_price(detail["annoText"])
+            detail_text = detail["annoText"]
+            item["price"] = extract_price(detail_text)
         else:
             item["price"] = "-"
+        save_to_md(item, detail_text, "announcement", len(procurement_announcements) - procurement_announcements.index(item), len(procurement_announcements))
         print(f"  公告: {clean_title(item.get('annoName',''))[:30]} → 价格={item.get('price','-')}", file=sys.stderr)
 
     # ===== 构建输出 =====
@@ -382,16 +510,32 @@ def main():
 
     summary = f"---\n合计: 采购结果{len(procurement_results)}条 | 采购公告{len(procurement_announcements)}条"
 
-    # 发送到企业微信webhook（智能合并：数据少时尽量1条消息发完）
-    full_msg = header
-    if result_lines or announcement_lines:
-        if result_lines:
-            send_wecom(f"**📊 采购结果（{len(procurement_results)}条）**", result_lines)
-        if announcement_lines:
-            send_wecom(f"**📊 采购公告（{len(procurement_announcements)}条）**", announcement_lines)
-        send_wecom(summary, [])
-    else:
-        send_wecom(header + '\n' + summary, [])
+    # 保存结构化数据供广东日报使用
+    today = datetime.now().strftime("%Y-%m-%d")
+    json_dir = os.path.join(SAVE_DIR, today)
+    os.makedirs(json_dir, exist_ok=True)
+    json_items = []
+    for item in procurement_results:
+            json_items.append({'title': item.get('annoName',''), 'province': item.get('inferredProvince','其他'),
+                              'winner': item.get('winner','-'), 'price': item.get('price','-'),
+                              'date': item.get('createDate',''), 'type': '采购结果', 'id': item.get('id','')})
+    for item in procurement_announcements:
+            json_items.append({'title': item.get('annoName',''), 'province': item.get('inferredProvince','其他'),
+                              'price': item.get('price','-'), 'date': item.get('createDate',''),
+                              'type': '采购公告', 'id': item.get('id','')})
+    with open(os.path.join(json_dir, '_items.json'), 'w', encoding='utf-8') as f:
+            json.dump(json_items, f, ensure_ascii=False, indent=2)
+
+    # 发送到企业微信webhook（数据少时1条消息，超4096字节才分片）
+    lines = [header, ""]
+    if result_lines:
+        lines.append(f"**📊 采购结果（{len(procurement_results)}条）**")
+        lines.extend(result_lines)
+    if announcement_lines:
+        lines.append(f"**📊 采购公告（{len(procurement_announcements)}条）**")
+        lines.extend(announcement_lines)
+    lines.append(summary)
+    send_wecom('\n'.join(lines))
 
     # stdout输出
     print(header + "\n")
